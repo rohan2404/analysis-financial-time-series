@@ -4,11 +4,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from scipy.stats import pearsonr
 from statsmodels.tsa.stattools import adfuller
 
 DATA_PATH = Path(__file__).with_name("ex14.dat")
 MAX_LAG = 3
 MAX_ACF_LAG = 36
+LAG_CORR_ALPHA = 0.05
 
 data = pd.read_csv(DATA_PATH, sep=r"\s+")
 # COLUMNS:
@@ -17,7 +19,7 @@ data = pd.read_csv(DATA_PATH, sep=r"\s+")
 # "cost": "pct carry cost" (i.e. multiplied by 100)
 data["futures_rets"] = data["lnfuture"].diff()
 data["spot_rets"] = data["lnspot"].diff()
-df = data[["futures_rets", "spot_rets", "cost"]]
+df = data[["futures_rets", "spot_rets", "cost"]].copy()
 df["cost"] /= 100
 df = df.dropna()
 print(df)
@@ -38,26 +40,55 @@ fig.suptitle("Time Series", y=1.02)
 fig.tight_layout()
 
 # %%
+def lagged_pearsonr(current: pd.Series, lagged: pd.Series) -> tuple[float, float]:
+    paired = pd.concat([current, lagged], axis=1).dropna()
+    result = pearsonr(paired.iloc[:, 0], paired.iloc[:, 1])
+    return result.statistic, result.pvalue
+
+
+lag_correlation_results = {
+    f"{lagged_col} lag {lag}": {
+        current_col: lagged_pearsonr(df[current_col], df[lagged_col].shift(lag))
+        for current_col in df.columns
+    }
+    for lag in range(MAX_LAG + 1)
+    for lagged_col in df.columns
+}
+
 lag_correlations = pd.DataFrame(
     {
-        f"{lagged_col} lag {lag}": {
-            current_col: df[current_col].corr(df[lagged_col].shift(lag))
-            for current_col in df.columns
+        lagged_col: {
+            current_col: result[0] for current_col, result in current_results.items()
         }
-        for lag in range(MAX_LAG + 1)
-        for lagged_col in df.columns
+        for lagged_col, current_results in lag_correlation_results.items()
     }
 )
+lag_correlation_pvalues = pd.DataFrame(
+    {
+        lagged_col: {
+            current_col: result[1] for current_col, result in current_results.items()
+        }
+        for lagged_col, current_results in lag_correlation_results.items()
+    }
+)
+significant_lag_correlations = lag_correlation_pvalues < LAG_CORR_ALPHA
 
 print("\nLag correlations: rows are current series, columns are lagged series")
 print(lag_correlations.round(4))
+print(f"\nSignificant lag correlations at p < {LAG_CORR_ALPHA}")
+print(lag_correlations.where(significant_lag_correlations).dropna(how="all", axis=1).round(4))
 
 fig, ax = plt.subplots(figsize=(12, 4.5), constrained_layout=True)
+lag_correlation_labels = lag_correlations.map(lambda value: f"{value:.2f}")
+lag_correlation_labels = lag_correlation_labels.mask(
+    significant_lag_correlations,
+    lag_correlation_labels + "*",
+)
 sns.heatmap(
     lag_correlations,
     ax=ax,
-    annot=True,
-    fmt=".2f",
+    annot=lag_correlation_labels,
+    fmt="",
     cmap="vlag",
     center=0,
     vmin=-1,
@@ -65,7 +96,21 @@ sns.heatmap(
     linewidths=0.5,
     cbar_kws={"label": "Correlation"},
 )
-ax.set_title("Lag Correlations")
+for y, current_col in enumerate(lag_correlations.index):
+    for x, lagged_col in enumerate(lag_correlations.columns):
+        if significant_lag_correlations.loc[current_col, lagged_col]:
+            ax.add_patch(
+                plt.Rectangle(
+                    (x, y),
+                    1,
+                    1,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=2,
+                )
+            )
+
+ax.set_title(f"Lag Correlations (* p < {LAG_CORR_ALPHA})")
 ax.set_xlabel("Lagged series")
 ax.set_ylabel("Current series")
 ax.tick_params(axis="x", rotation=45)
