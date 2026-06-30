@@ -1,0 +1,233 @@
+# %%
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+from scipy.stats import pearsonr
+from statsmodels.tsa.stattools import adfuller
+
+DATA_PATH = Path(__file__).with_name("ex14.dat")
+MAX_LAG = 3
+MAX_ACF_LAG = 36
+LAG_CORR_ALPHA = 0.05
+
+data = pd.read_csv(DATA_PATH, sep=r"\s+")
+# COLUMNS:
+# "lnfuture": "log future price",
+# "lnspot": "log spot price",
+# "cost": "pct carry cost" (i.e. multiplied by 100)
+data["futures_rets"] = data["lnfuture"].diff()
+data["spot_rets"] = data["lnspot"].diff()
+df = data[["futures_rets", "spot_rets", "cost"]].copy()
+df["cost"] /= 100
+df = df.dropna()
+print(df)
+# %%
+sns.set_theme(style="whitegrid")
+
+axes = df.plot(
+    subplots=True,
+    figsize=(11, 7),
+    title=["Futures returns", "Spot returns", "Carry cost"],
+    legend=False,
+    linewidth=1,
+)
+for ax in axes:
+    ax.set_xlabel("Observation")
+fig = axes[0].figure
+fig.suptitle("Time Series", y=1.02)
+fig.tight_layout()
+
+# %%
+def lagged_pearsonr(current: pd.Series, lagged: pd.Series) -> tuple[float, float]:
+    paired = pd.concat([current, lagged], axis=1).dropna()
+    result = pearsonr(paired.iloc[:, 0], paired.iloc[:, 1])
+    return result.statistic, result.pvalue # type: ignore
+
+
+lag_correlation_results = {
+    f"{lagged_col} lag {lag}": {
+        current_col: lagged_pearsonr(df[current_col], df[lagged_col].shift(lag))
+        for current_col in df.columns
+    }
+    for lag in range(MAX_LAG + 1)
+    for lagged_col in df.columns
+}
+
+lag_correlations = pd.DataFrame(
+    {
+        lagged_col: {
+            current_col: result[0] for current_col, result in current_results.items()
+        }
+        for lagged_col, current_results in lag_correlation_results.items()
+    }
+)
+lag_correlation_pvalues = pd.DataFrame(
+    {
+        lagged_col: {
+            current_col: result[1] for current_col, result in current_results.items()
+        }
+        for lagged_col, current_results in lag_correlation_results.items()
+    }
+)
+significant_lag_correlations = lag_correlation_pvalues < LAG_CORR_ALPHA
+
+print("\nLag correlations: rows are current series, columns are lagged series")
+print(lag_correlations.round(4))
+print(f"\nSignificant lag correlations at p < {LAG_CORR_ALPHA}")
+print(lag_correlations.where(significant_lag_correlations).dropna(how="all", axis=1).round(4))
+
+fig, ax = plt.subplots(figsize=(12, 4.5), constrained_layout=True)
+lag_correlation_labels = lag_correlations.map(lambda value: f"{value:.2f}")
+lag_correlation_labels = lag_correlation_labels.mask(
+    significant_lag_correlations,
+    lag_correlation_labels + "*",
+)
+sns.heatmap(
+    lag_correlations,
+    ax=ax,
+    annot=lag_correlation_labels,
+    fmt="",
+    cmap="vlag",
+    center=0,
+    vmin=-1,
+    vmax=1,
+    linewidths=0.5,
+    cbar_kws={"label": "Correlation"},
+)
+for y, current_col in enumerate(lag_correlations.index):
+    for x, lagged_col in enumerate(lag_correlations.columns):
+        if significant_lag_correlations.loc[current_col, lagged_col]:
+            ax.add_patch(
+                plt.Rectangle( # type: ignore
+                    (x, y),
+                    1,
+                    1,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=2,
+                )
+            )
+
+ax.set_title(f"Lag Correlations (* p < {LAG_CORR_ALPHA})")
+ax.set_xlabel("Lagged series")
+ax.set_ylabel("Current series")
+ax.tick_params(axis="x", rotation=45)
+
+# %%
+spot_futures_lag_results = [
+    (lag, *lagged_pearsonr(df["spot_rets"], df["futures_rets"].shift(lag)))
+    for lag in range(MAX_ACF_LAG + 1)
+]
+spot_futures_lags = pd.DataFrame(
+    spot_futures_lag_results,
+    columns=["lag", "correlation", "p_value"],
+).set_index("lag")
+spot_futures_lags["significant"] = spot_futures_lags["p_value"] < LAG_CORR_ALPHA
+spot_futures_significance_level = 1.96 / (len(df) ** 0.5)
+
+print("\nSpot returns vs lagged futures returns")
+print(spot_futures_lags.round(4))
+
+fig, ax = plt.subplots(figsize=(11, 4.5), constrained_layout=True)
+significant_spot_futures_lags = spot_futures_lags["significant"]
+ax.bar(
+    spot_futures_lags.index[~significant_spot_futures_lags],
+    spot_futures_lags.loc[~significant_spot_futures_lags, "correlation"],
+    color="0.75",
+    label=f"Not significant (p >= {LAG_CORR_ALPHA})",
+)
+ax.bar(
+    spot_futures_lags.index[significant_spot_futures_lags],
+    spot_futures_lags.loc[significant_spot_futures_lags, "correlation"],
+    color="tab:blue",
+    label=f"Significant (p < {LAG_CORR_ALPHA})",
+)
+ax.axhline(0, color="black", linewidth=0.8)
+ax.axhline(
+    spot_futures_significance_level,
+    color="tab:red",
+    linestyle="--",
+    linewidth=1,
+    label="Approx. 95% bounds",
+)
+ax.axhline(
+    -spot_futures_significance_level,
+    color="tab:red",
+    linestyle="--",
+    linewidth=1,
+)
+ax.fill_between(
+    spot_futures_lags.index,
+    -spot_futures_significance_level,
+    spot_futures_significance_level,
+    color="tab:red",
+    alpha=0.08,
+)
+ax.set_title("Spot Returns vs Lagged Futures Returns")
+ax.set_xlabel("Futures return lag")
+ax.set_ylabel("Pearson correlation")
+ax.legend()
+# %% [markdown]
+# Linear regression on future and spot may work well with 0.4 correlation
+# There's also an abnormal correlation with spot and lag 1 through 3 on future
+
+# %%
+return_columns = ["futures_rets", "spot_rets"]
+acf_lags = range(1, MAX_ACF_LAG + 1)
+acf_significance_level = 1.96 / (len(df) ** 0.5)
+
+return_acfs = pd.DataFrame(
+    {
+        column: [df[column].autocorr(lag=lag) for lag in acf_lags]
+        for column in return_columns
+    },
+    index=pd.Index(acf_lags, name="lag"),
+)
+
+print("\nReturn autocorrelations")
+print(return_acfs.round(4))
+print(f"\nApprox. 95% ACF significance bounds: +/-{acf_significance_level:.4f}")
+
+fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True, constrained_layout=True)
+for ax, column in zip(axes, return_columns):
+    ax.bar(return_acfs.index, return_acfs[column].to_numpy())
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(acf_significance_level, color="tab:red", linestyle="--", linewidth=1)
+    ax.axhline(-acf_significance_level, color="tab:red", linestyle="--", linewidth=1)
+    ax.fill_between(
+        return_acfs.index,
+        -acf_significance_level,
+        acf_significance_level,
+        color="tab:red",
+        alpha=0.08,
+    )
+    ax.set_title(f"{column}: ACF")
+    ax.set_ylabel("Autocorrelation")
+axes[-1].set_xlabel("Lag")
+
+# %%
+adf_results = pd.DataFrame(
+    {
+        column: {
+            "adf_statistic": result[0],
+            "p_value": result[1],
+            "used_lags": result[2],
+            "n_observations": result[3],
+            "stationary_at_5pct": result[1] < 0.05,
+        }
+        for column in return_columns
+        for result in [adfuller(df[column], autolag="AIC")]
+    }
+).T
+
+print("\nAugmented Dickey-Fuller stationarity tests")
+print(adf_results.round(4))
+
+# %%
+sns.pairplot(df, diag_kind="kde", corner=True, plot_kws={"alpha": 0.6, "s": 20})
+plt.show()
+# %% [markdown]
+# look at the spot on futures plot - it's obvious that linear regression may be the way forward
+# %%
