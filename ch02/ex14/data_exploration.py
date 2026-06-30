@@ -43,7 +43,7 @@ fig.tight_layout()
 def lagged_pearsonr(current: pd.Series, lagged: pd.Series) -> tuple[float, float]:
     paired = pd.concat([current, lagged], axis=1).dropna()
     result = pearsonr(paired.iloc[:, 0], paired.iloc[:, 1])
-    return result.statistic, result.pvalue
+    return result.statistic, result.pvalue # type: ignore
 
 
 lag_correlation_results = {
@@ -100,7 +100,7 @@ for y, current_col in enumerate(lag_correlations.index):
     for x, lagged_col in enumerate(lag_correlations.columns):
         if significant_lag_correlations.loc[current_col, lagged_col]:
             ax.add_patch(
-                plt.Rectangle(
+                plt.Rectangle( # type: ignore
                     (x, y),
                     1,
                     1,
