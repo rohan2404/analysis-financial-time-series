@@ -114,6 +114,61 @@ ax.set_title(f"Lag Correlations (* p < {LAG_CORR_ALPHA})")
 ax.set_xlabel("Lagged series")
 ax.set_ylabel("Current series")
 ax.tick_params(axis="x", rotation=45)
+
+# %%
+spot_futures_lag_results = [
+    (lag, *lagged_pearsonr(df["spot_rets"], df["futures_rets"].shift(lag)))
+    for lag in range(MAX_ACF_LAG + 1)
+]
+spot_futures_lags = pd.DataFrame(
+    spot_futures_lag_results,
+    columns=["lag", "correlation", "p_value"],
+).set_index("lag")
+spot_futures_lags["significant"] = spot_futures_lags["p_value"] < LAG_CORR_ALPHA
+spot_futures_significance_level = 1.96 / (len(df) ** 0.5)
+
+print("\nSpot returns vs lagged futures returns")
+print(spot_futures_lags.round(4))
+
+fig, ax = plt.subplots(figsize=(11, 4.5), constrained_layout=True)
+significant_spot_futures_lags = spot_futures_lags["significant"]
+ax.bar(
+    spot_futures_lags.index[~significant_spot_futures_lags],
+    spot_futures_lags.loc[~significant_spot_futures_lags, "correlation"],
+    color="0.75",
+    label=f"Not significant (p >= {LAG_CORR_ALPHA})",
+)
+ax.bar(
+    spot_futures_lags.index[significant_spot_futures_lags],
+    spot_futures_lags.loc[significant_spot_futures_lags, "correlation"],
+    color="tab:blue",
+    label=f"Significant (p < {LAG_CORR_ALPHA})",
+)
+ax.axhline(0, color="black", linewidth=0.8)
+ax.axhline(
+    spot_futures_significance_level,
+    color="tab:red",
+    linestyle="--",
+    linewidth=1,
+    label="Approx. 95% bounds",
+)
+ax.axhline(
+    -spot_futures_significance_level,
+    color="tab:red",
+    linestyle="--",
+    linewidth=1,
+)
+ax.fill_between(
+    spot_futures_lags.index,
+    -spot_futures_significance_level,
+    spot_futures_significance_level,
+    color="tab:red",
+    alpha=0.08,
+)
+ax.set_title("Spot Returns vs Lagged Futures Returns")
+ax.set_xlabel("Futures return lag")
+ax.set_ylabel("Pearson correlation")
+ax.legend()
 # %% [markdown]
 # Linear regression on future and spot may work well with 0.4 correlation
 # There's also an abnormal correlation with spot and lag 1 through 3 on future
