@@ -3,8 +3,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
-from statsmodels.tsa.stattools import adfuller
 
 DATA_PATH = Path(__file__).with_name("ex14.dat")
 
@@ -20,3 +18,4 @@ df = df.copy()
 df["cost"] /= 100
 df = df.dropna()
 print(df)
+# %%
